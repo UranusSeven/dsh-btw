@@ -7,7 +7,7 @@ import type { ToolRuntime as RuntimeType } from '@deepseek-ai/dsh-tools'
 import type { Agent } from '@deepseek-ai/dsh-agent'
 import type { CommandDefinition } from '@deepseek-ai/dsh-commands'
 import { apply } from '../src/index'
-import { RUN_COMMAND } from '../src/shared'
+import { CLOSE_COMMAND, REPLY_COMMAND, RUN_COMMAND } from '../src/shared'
 import { translate } from '../src/locales'
 import { SIDE_MAX_OUTPUT_TOKENS } from '../src/limits'
 import { createAnswerOnlyGuard } from '../src/server/tool-guard'
@@ -483,4 +483,89 @@ describe(`DSH ${runtimeVersion} 真实运行时`, () => {
     await plugin.dispose()
     await ctx.fiber.dispose()
   })
+
+  it('continuable 宿主：同一 childId 承接多轮追问，关闭时释放激活', async () => {
+    const { Context, ToolRuntime } = await load()
+    const ctx = new Context()
+    ctx.provide('systemPrompt', { tools: () => () => {}, section: () => () => {}, getSectionOrder: () => 0 })
+    await setupTools(ctx, ToolRuntime)
+    const commands = new Map<string, CommandDefinition>()
+    ctx.provide('commands', { register: (command: CommandDefinition) => { commands.set(command.name, command); return () => { commands.delete(command.name) } } })
+    const delivered: Array<{ childId: string; text: string }> = []
+    const interrupted: string[] = []
+    const drained: string[] = []
+    const disposed = vi.fn(async () => {})
+    let childId: string | undefined
+    const subagents = {
+      getProvider: () => ({ inheritsParentContext: true, capabilities: { agentOptions: true, agentPreset: false, outputSchema: true, depthLimit: true } }),
+      startActivation: async (spec: { childId: string }) => {
+        childId = spec.childId
+        return { result: new Promise(() => {}), dispose: disposed }
+      },
+      interruptByParent: (child: string) => { interrupted.push(child) },
+      drainChildren: async (_parent: unknown, ids: readonly string[]) => { drained.push(...ids) },
+      [Symbol.for('dsh.subagent.deliverPrompt')]: async (_parent: unknown, child: string, content: readonly { text?: string }[]) => {
+        delivered.push({ childId: child, text: content.map(part => part.text ?? '').join('') })
+      },
+    }
+    ctx.provide('subagents', subagents)
+    const plugin = ctx.plugin(apply)
+    await plugin.await()
+
+    const session = { header: { id: 'main' } }
+    const inboxListeners: Array<(payload: unknown) => void> = []
+    const parent = {
+      session,
+      ctx: { on: (_event: string, listener: (payload: unknown) => void) => { inboxListeners.push(listener); return () => {} } },
+    }
+    const run = commands.get(RUN_COMMAND)!.handler({
+      agent: parent,
+      rawInput: JSON.stringify({ id: 'multi-request-01', question: '第一问' }),
+      signal: new AbortController().signal,
+    } as never)
+    await vi.waitFor(() => expect(childId).toBeDefined())
+    const childSession = { header: { id: childId } }
+    ;(ctx as any).emit('session/event', childSession, { type: 'turn/start', data: { turn: 1 } })
+    ;(ctx as any).emit('session/event', childSession, { type: 'assistant/message', data: { turn: 1, step: 1, message: { content: [{ type: 'text', text: '第一答' }] }, stream: [] } })
+    ;(ctx as any).emit('session/event', childSession, { type: 'turn/end', data: { turn: 1, reason: { kind: 'completed' } } })
+    await expect(run).resolves.toMatchObject({ kind: 'success', text: '第一答' })
+
+    // 冷恢复的结算通知会以 subagent-settled 用户消息插入主会话；插件必须移除它，
+    // 否则主窗口会显示 "Background subagent …" 并驱动主 Agent 多跑一轮。
+    const remove = vi.fn(() => true)
+    const parentAgent = { session, inbox: { remove } }
+    await vi.waitFor(() => expect(inboxListeners).toHaveLength(1))
+    inboxListeners[0]!({
+      agent: parentAgent,
+      message: { id: 'settle-1', source: { kind: 'subagent-settled', senderSessionId: childId } },
+    })
+    expect(remove).toHaveBeenCalledWith('settle-1')
+    remove.mockClear()
+    inboxListeners[0]!({
+      agent: parentAgent,
+      message: { id: 'settle-2', source: { kind: 'subagent-settled', senderSessionId: 'other-child' } },
+    })
+    expect(remove).not.toHaveBeenCalled()
+
+    const reply = commands.get(REPLY_COMMAND)!.handler({
+      agent: parent,
+      rawInput: JSON.stringify({ id: 'multi-request-01', kind: 'reply', turn: 2, text: '第二问' }),
+      signal: new AbortController().signal,
+    } as never)
+    await vi.waitFor(() => expect(delivered).toHaveLength(1))
+    expect(delivered[0]).toEqual({ childId, text: '第二问' })
+    ;(ctx as any).emit('session/event', childSession, { type: 'turn/start', data: { turn: 2 } })
+    ;(ctx as any).emit('session/event', childSession, { type: 'assistant/message', data: { turn: 2, step: 1, message: { content: [{ type: 'text', text: '第二答' }] }, stream: [] } })
+    ;(ctx as any).emit('session/event', childSession, { type: 'turn/end', data: { turn: 2, reason: { kind: 'completed' } } })
+    await expect(reply).resolves.toMatchObject({ kind: 'success', text: '第二答' })
+
+    const close = commands.get(CLOSE_COMMAND)!.handler({ agent: parent, rawInput: 'multi-request-01', signal: new AbortController().signal } as never)
+    await expect(close).resolves.toEqual({ kind: 'success', text: '' })
+    expect(interrupted).toEqual([childId])
+    expect(drained).toEqual([childId])
+    expect(disposed).toHaveBeenCalledTimes(1)
+    await plugin.dispose()
+    await ctx.fiber.dispose()
+  })
+
 })

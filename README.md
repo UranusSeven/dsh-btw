@@ -23,9 +23,10 @@
 - **Context-aware questions**: explain concepts, recap conclusions, or ask a quick question about the current conversation.
 - **Answers only**: no reading new files, browsing the web, running commands, or editing code.
 - **Independent answer bubbles**: render Markdown and formulas, copy answers, collapse, expand, and close individual bubbles. Multiple answers can stay visible.
+- **Multi-turn follow-ups inside a bubble**: keep asking in the same bubble (10 turns by default); follow-ups share that bubble's child-session history, while separate bubbles remain independent.
 - **Keep the main task going**: side questions are answered separately and by default do not add answers to the main conversation.
 - **Return on request**: when you want the conclusion available to the main conversation, ask for it in the question ("send the answer back to the main conversation") and the side ask uses `send_message` to deliver a self-contained answer to the main session. It does not send anything when you did not ask.
-- **Cancel anytime**: close a bubble while it is answering to cancel that question.
+- **Cancel anytime**: stop only the current turn and keep the bubble, or close the bubble to cancel and release it.
 - **Themes and languages**: follow DSH light and dark themes and switch between Chinese and English UI.
 
 ## Screenshots
@@ -140,9 +141,11 @@ In a conversation with existing context, enter:
 | Read the answer | Wait for the answer in the independent bubble above the composer. |
 | Copy an answer | Click the copy icon in the bubble's upper right. |
 | Collapse or expand | Click the collapse or expand icon. |
-| Cancel a question | Close its bubble while it is running. The main task is unaffected. |
+| Stop this turn | Click the stop button while answering. Only the current turn is cancelled; the bubble and completed turns remain, and you can retry immediately. |
+| Close a side question | Click the close button in the bubble header. The current turn is stopped and the bubble's child session is released. |
 | Dismiss an answer | Close the completed bubble. |
-| Ask again | Submit another `/btw` question. Each question is independent. |
+| Ask a follow-up | Expand the bubble and use the composer at the bottom. Enter sends, Shift+Enter inserts a newline, Esc clears the input. |
+| Start a new topic | Submit another `/btw` question. The new bubble is independent and does not share the old bubble's history. |
 
 Use the regular conversation to run commands, edit code, or continue the main task. BTW can only answer using existing context.
 
@@ -150,8 +153,11 @@ BTW accepts text only. Side questions with images or files are rejected without 
 
 ### Usage Notes
 
-- Each question is independent and uses completed content from the main conversation at the time you ask. It does not include an answer still being generated or previous side questions.
-- Bubbles are not restored after refreshing the page. Copy any answers you want to keep first.
+- You can keep asking in the same bubble. Follow-ups in one bubble share that child session's history; separate bubbles are independent. Follow-ups still run no tools, so the safety boundary is identical to the first turn.
+- The child session forks the main conversation once, on the first turn. Content added to the main chat afterwards is not included automatically; start a new side question to pick up the latest context.
+- Each bubble allows 10 turns by default. When the limit is reached the composer is disabled; start a new bubble.
+- After a refresh, completed bubble history is restored from local storage and can be continued. If the host has already cleaned up the child session, the bubble reports that the session expired.
+- The host usually settles and releases a finished turn's activation immediately; the plugin also releases it after 5 idle minutes as a backstop. Later follow-ups cold-resume from persistence, so the first token may be 1–2 seconds slower than a warm turn.
 
 ## Settings
 

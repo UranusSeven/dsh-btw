@@ -1,5 +1,26 @@
 # Changelog
 
+## [1.4.2] - 2026-10-29
+
+- Fix the capability flag still being lost: the host's `CommandResult` permits only `kind` / `text` / `sourceEventSeq`, so the `multiturn` field on the `btw-run` result is stripped by the command channel and the composer still disappears after the first turn. Added a hidden `btw-capabilities` command; the client probes it explicitly, and an older server that does not know it degrades to hiding the composer.
+- The probe runs only when a bubble exists, so empty sessions make no extra command round-trip; a first-turn result can no longer downgrade an already-confirmed capability to false.
+
+## [1.4.1] - 2026-10-29
+
+- Fix the follow-up composer disappearing after the first answer: the client transport rebuilt the result object and dropped `multiturn` / `partial`, so the state machine misread the host as not supporting multi-turn. The transport now preserves the protocol fields and reads the capability flag from the first result.
+- Fix cold-resumed turns leaking a settlement notice into the main conversation: a cold-resumed child is materialized with `delivery: 'parent'`, so the host injects "Background subagent … finished" into the parent. The plugin now removes that `subagent-settled` message synchronously when it enters the parent inbox, matched precisely by its own childId, so the main conversation gains no message and no extra turn.
+- Add regression tests for capability propagation, legacy-server degradation, and settlement-notice filtering.
+
+## [1.4.0] - 2026-10-29
+
+- Multi-turn follow-ups inside a bubble: one bubble now maps to one continuable child session. Expand the bubble and keep asking in the bottom composer; follow-ups share the previous turn history, need no re-pasted context, and add nothing to the main conversation (PRD multi-turn side questions).
+- Two-level cancellation: the stop button cancels only the current turn and keeps completed turns; the close button releases the whole child session. A cancelled turn can be retried immediately.
+- Turn model and limit: bubbles render `Q1/A1/Q2/A2` with a turn-count badge and a default 10-turn cap; at the cap the composer is disabled and suggests a new bubble. Copying a multi-turn bubble emits a complete Markdown transcript.
+- Lifecycle and capacity: the plugin caps concurrent side-question turns at 6 to leave subagent slots for the main task. The host usually settles a finished turn immediately; the plugin also releases it after 5 idle minutes as a backstop, and later follow-ups cold-resume through the host (`subagents.prompt` / `deliverSubagentPrompt`) while keeping the `childId`.
+- Refresh restore: completed bubble history is stored per session in `localStorage`, restored after a refresh, and can be continued; an expired host child session reports "session expired".
+- Safety boundary unchanged: every turn still passes the execution-time tool guard. Only `send_message` addressed at the bubble's own parent session is allowed; the configured tool whitelist also applies to follow-up turns.
+- Compatibility fallback: hosts without continuable delivery fall back to the one-shot path; the new server ignores unknown `kind` values and keeps the old protocol behaviour.
+
 ## [1.3.0] - 2026-10-29
 
 - Configurable tool whitelist: add a settings page on the plugin's row in **Plugins** (the same place as `dsh-subagent-default-model`'s configuration) where a comma-free, one-per-line list of tool names widens what a side question may call. The execution-time guard reads the whitelist on every call, so changes apply to the next side question without reloading the plugin. Empty keeps the previous text-only behaviour (#22).

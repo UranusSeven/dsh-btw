@@ -11,7 +11,7 @@ import type {} from '@deepseek-ai/dsh-client-ui-chat/client'
 import type {} from '@deepseek-ai/dsh-client-ui-conversation/client'
 import type { SessionId } from '@deepseek-ai/dsh-session/types'
 import { MessageCircle } from 'lucide-react'
-import { CLOSE_COMMAND, RUN_COMMAND, type SideResult } from '../shared'
+import { CAPABILITIES_COMMAND, CLOSE_COMMAND, REPLY_COMMAND, RUN_COMMAND, STOP_COMMAND, type SideResult } from '../shared'
 import { BubbleStore, SideRequestNotStartedError } from './bubbles'
 import { BubbleDock } from './BubbleView'
 import { QuoteStore } from './quotes'
@@ -135,10 +135,25 @@ export function apply(ctx: Context): void {
       throw new Error(failure.message)
     }
     if (!response.value) throw new Error(t('error.backend'))
-    return { kind: response.value.result.kind, text: response.value.result.text ?? '' }
+    // 只透传协议字段，别把宿主返回的其它对象直接泄漏给上层；multiturn/partial
+    // 是多轮状态机与半成品答案渲染所必需的，漏掉会让追问框在第一轮后消失。
+    const result = response.value.result as SideResult & { partial?: string; multiturn?: boolean }
+    return {
+      kind: result.kind,
+      text: result.text ?? '',
+      ...(result.multiturn === true ? { multiturn: true } : {}),
+      ...(result.partial === undefined ? {} : { partial: result.partial }),
+    }
   }
+  const locale = () => normalizeLocale(t('locale.id'))
   const store = new BubbleStore({
-    run: (session, id, question, signal, reference) => execute(session, `/${RUN_COMMAND} ${JSON.stringify({ id, question, reference, locale: normalizeLocale(t('locale.id')) })}`, signal),
+    run: (session, id, question, signal, reference) => execute(session, `/${RUN_COMMAND} ${JSON.stringify({ id, question, reference, locale: locale() })}`, signal),
+    reply: (session, id, turn, text, signal, reference) => execute(session, `/${REPLY_COMMAND} ${JSON.stringify({ id, kind: 'reply', turn, text, reference, locale: locale() })}`, signal),
+    stop: (session, id) => execute(session, `/${STOP_COMMAND} ${id}`),
+    probe: async session => {
+      const result = await execute(session, `/${CAPABILITIES_COMMAND}`)
+      return result.kind === 'success' && result.text.trim() === 'multiturn'
+    },
     close: (session, id) => execute(session, `/${CLOSE_COMMAND} ${id}`),
   }, t)
   const quoteStore = new QuoteStore()
@@ -227,6 +242,10 @@ export function apply(ctx: Context): void {
 
   function Dock(props: PropsRuntime<'conversation.input.dock'> & { t: BtwTranslate }): React.JSX.Element {
     const session = (ctx.get('sessions') as unknown as ISessions).scope(props.session.sessionId)
+    // 刷新只丢客户端内存；把同一会话的历史气泡恢复出来，服务端 childId 仍可冷恢复。
+    // 放到微任务里执行：Dock 也会被测试当普通函数调用，不应依赖 React hooks 的渲染上下文。
+    const sessionId = props.session.sessionId
+    queueMicrotask(() => { store.hydrate(sessionId) })
     const uc = ctx.get('uiConversation') as { interactions?: { register?: unknown } } | undefined
     const hasNativeSelection = typeof uc?.interactions?.register === 'function'
 
@@ -288,7 +307,7 @@ export function apply(ctx: Context): void {
     return () => disposers.forEach(d => d())
   })
   slots.inject('conversation.chat.commandview', () => {
-    const off = [RUN_COMMAND, CLOSE_COMMAND].map(key => slots.register({ name: 'conversation.chat.commandview', key }, () => null))
+    const off = [RUN_COMMAND, CLOSE_COMMAND, REPLY_COMMAND, STOP_COMMAND, CAPABILITIES_COMMAND].map(key => slots.register({ name: 'conversation.chat.commandview', key }, () => null))
     return () => off.forEach(dispose => dispose())
   })
 

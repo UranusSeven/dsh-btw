@@ -7,6 +7,7 @@ import { afterEach, expect, it, vi } from 'vitest'
 import * as clientPlugin from '../src/client/index'
 import type { BubbleStore } from '../src/client/bubbles'
 import { translate } from '../src/locales'
+import { CAPABILITIES_COMMAND } from '../src/shared'
 import { hostLocaleRuntime } from './host-client-fixtures'
 
 const tick = () => new Promise<void>(resolve => setImmediate(resolve))
@@ -17,9 +18,12 @@ type DockProps = { session: SessionHint; t: ReturnType<typeof translate> }
 type Dock = (props: DockProps) => React.ReactElement<{ children: React.ReactNode }>
 
 /** 只替换传输响应；使用真实 Cordis、客户端入口和气泡状态。 */
-async function setup() {
+async function setup(result: Record<string, unknown> = { kind: 'success', text: '回答' }, capabilities = true) {
   const ctx = new Context()
-  const execute = vi.fn(async (_session: string, _line: string, _attachments: unknown[], _signal?: AbortSignal): Promise<unknown> => ({ ok: true, value: { result: { kind: 'success', text: '回答' } } }))
+  const execute = vi.fn(async (_session: string, line: string, _attachments: unknown[], _signal?: AbortSignal): Promise<unknown> => ({
+    ok: true,
+    value: { result: line === `/${CAPABILITIES_COMMAND}` ? { kind: 'success', text: capabilities ? 'multiturn' : '' } : result },
+  }))
   const commands = {
     candidates: vi.fn(async (_session?: unknown) => [{ name: 'btw' }, { name: 'compact' }]),
     dispatch: vi.fn((_pick: unknown): unknown => 'host'),
@@ -238,4 +242,24 @@ it('一般 agent-busy 或断网不丢弃气泡，保留关闭重试', async () =
     expect(store.getSnapshot()[0]).toMatchObject({ id, closeFailed: true })
     expect(h.execute).toHaveBeenCalledTimes(2)
   } finally { await h.ctx.fiber.dispose() }
+})
+
+it('通过隐藏命令探测多轮能力：新服务端首轮后仍可追问，旧服务端自动隐藏', async () => {
+  const supported = await setup({ kind: 'success', text: '回答' })
+  try {
+    const store = supported.store()
+    await store.probe('main')
+    await store.ask('main', '问题')
+    await tick()
+    expect(store.supportsReply).toBe(true)
+  } finally { await supported.ctx.fiber.dispose() }
+
+  const legacy = await setup({ kind: 'success', text: '回答' }, false)
+  try {
+    const store = legacy.store()
+    await store.probe('main')
+    await store.ask('main', '问题')
+    await tick()
+    expect(store.supportsReply).toBe(false)
+  } finally { await legacy.ctx.fiber.dispose() }
 })

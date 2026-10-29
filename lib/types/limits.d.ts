@@ -8,6 +8,19 @@ export declare const MAX_QUESTION_LENGTH = 8000;
 export declare const MAX_REFERENCE_LENGTH = 8000;
 export declare const MAX_TOTAL_QUOTES_LENGTH = 16000;
 /**
+ * 一个旁问气泡允许的问答轮次上限（首轮 + 追问）。
+ * 达到上限后客户端禁用追问输入，服务端仍二次校验，避免旧客户端绕过。
+ */
+export declare const MAX_TURNS_PER_BUBBLE = 10;
+/**
+ * 插件侧同时进行的旁问轮次上限。
+ *
+ * 宿主默认 `maxActiveSubagents = 8`，与普通 subagent 共用；旁问留出 2 个名额
+ * 给主任务，避免连续追问把主任务的委派全部挤掉。条目本身在轮次结束后不占名额
+ * （宿主会在子会话空闲后自然释放激活，后续追问走冷恢复）。
+ */
+export declare const MAX_ACTIVE_TURNS = 6;
+/**
  * 旁问子代理的输出预算上限（completion tokens）。
  *
  * 旁问会继承整段主任务上下文；如果同时继承主任务的 max_tokens（例如 1M 窗口路由上的
